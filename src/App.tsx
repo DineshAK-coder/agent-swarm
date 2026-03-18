@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Background, BackgroundVariant, ReactFlow, useNodesState, useEdgesState, addEdge, Connection, Node, useReactFlow, ReactFlowProvider } from '@xyflow/react';
+import { Background, BackgroundVariant, ReactFlow, useNodesState, useEdgesState, addEdge, Connection, Edge, Node, useReactFlow, ReactFlowProvider } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Plus, Send, Search, Layers, ChevronRight, ChevronLeft, Mic, Lock, Globe, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -23,20 +23,9 @@ const PASTEL_GRADIENTS = [
   'from-indigo-400 to-indigo-600',
 ];
 
-const initialNodes: Node[] = [
-  {
-    id: 'agent-1',
-    type: 'agent',
-    position: { x: 250, y: 150 },
-    data: {
-      id: 'agent-1',
-      name: 'Agent Alpha',
-      isListening: true,
-      isAudioActive: true,
-      color: PASTEL_GRADIENTS[4],
-    },
-  },
-];
+const initialNodes: Node[] = [];
+
+const initialEdges: Edge[] = [];
 
 export default function App() {
   return (
@@ -48,7 +37,7 @@ export default function App() {
 
 function AgenticCanvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [inputValue, setInputValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -65,8 +54,9 @@ function AgenticCanvas() {
   // Execution Abort Signal
   const abortRef = useRef<boolean>(false);
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const chatHistoryRef = useRef<string[]>([]);
 
-  const { setCenter, fitView } = useReactFlow();
+  const { setCenter, fitView, screenToFlowPosition } = useReactFlow();
 
   // -------------------------
   // Handlers
@@ -107,10 +97,20 @@ function AgenticCanvas() {
     const availableColor = PASTEL_GRADIENTS.find(c => !usedColors.includes(c)) || PASTEL_GRADIENTS[Math.floor(Math.random() * PASTEL_GRADIENTS.length)];
 
     const id = `agent-${Date.now()}`;
+    const screenCenter = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const flowCenter = screenToFlowPosition(screenCenter);
+    
+    // Radially scatter around the center
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 150 + Math.random() * 50;
+    
     const newNode: Node = {
       id,
       type: 'agent',
-      position: { x: Math.random() * 400 + 100, y: Math.random() * 400 + 100 },
+      position: { 
+        x: flowCenter.x - 128 + Math.cos(angle) * radius, 
+        y: flowCenter.y - 100 + Math.sin(angle) * radius 
+      },
       data: {
         id, 
         name: newAgentConfig.name || `Agent ${String.fromCharCode(65 + (nodes.length % 26))}`,
@@ -200,17 +200,42 @@ function AgenticCanvas() {
     setNodes(nds => nds.map(n => n.type === 'agent' ? { ...n, data: { ...n.data, isTalking: false, isThinking: false } } : n));
   };
 
+  const handleInterject = () => {
+    if (!inputValue.trim()) return;
+    const prompt = inputValue.trim();
+    setInputValue('');
+    
+    // Hard kill existing sequence
+    abortRef.current = true;
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current = null;
+    }
+    setNodes(nds => nds.map(n => n.type === 'agent' ? { ...n, data: { ...n.data, isTalking: false, isThinking: false } } : n));
+    
+    // Spin up fresh sequence with interjection
+    setTimeout(() => {
+      sendMessage(prompt);
+    }, 500);
+  };
+
   // -------------------------
   // Agentic Council Turn-taking Engine (Global)
   // -------------------------
-  const sendMessage = async () => {
-    if (!inputValue.trim() || isProcessing) return;
+  const sendMessage = async (interjectedPrompt?: string) => {
+    const targetPrompt = typeof interjectedPrompt === 'string' ? interjectedPrompt : inputValue;
+    if (!targetPrompt.trim() || (isProcessing && !interjectedPrompt)) return;
 
     abortRef.current = false;
     setIsProcessing(true);
     setCurrentSubtitle(null);
-    const userPrompt = inputValue;
-    setInputValue('');
+    if (!interjectedPrompt) setInputValue('');
+
+    chatHistoryRef.current.push(`User says: "${targetPrompt}"`);
+    if (chatHistoryRef.current.length > 20) {
+      // Keep memory bounded to avoid token overflow
+      chatHistoryRef.current = chatHistoryRef.current.slice(-20);
+    }
 
     // All active listening agents are automatically in the Global Council
     const listeningAgents = nodes.filter(n => (n.data as any).isListening && n.type === 'agent');
@@ -221,7 +246,6 @@ function AgenticCanvas() {
     }
 
     // Phase 3: Sequential Turn-taking globally
-    const transcript: string[] = [`User says: "${userPrompt}"`];
     let hasMoreToSay = true;
     let turnCount = 0;
     const MAX_TURNS = 4; // Allow full iteration but prevent endless looping
@@ -239,8 +263,8 @@ function AgenticCanvas() {
           const agentTone = (agent.data as any).tone || 'Casual and friendly';
 
           const context = isIsolated 
-            ? `You are ${(agent.data as any).name}. Role: ${agentRole}. Personality: ${agentPersonality}. Tone: ${agentTone}. The user says: "${userPrompt}". Respond entirely in character, executing your role utilizing the requested tone. Keep it brief.`
-            : `You are ${(agent.data as any).name}. Role: ${agentRole}. Personality: ${agentPersonality}. Tone: ${agentTone}. Transcript so far:\n${transcript.join('\n')}\nAdd your unique response to the discussion. Respond entirely in character utilizing the requested tone and personality. Keep it brief.`;
+            ? `You are ${(agent.data as any).name}. Role: ${agentRole}. Personality: ${agentPersonality}. Tone: ${agentTone}. The user says: "${targetPrompt}". Respond entirely in character, executing your role utilizing the requested tone. Keep it brief.`
+            : `You are ${(agent.data as any).name}. Role: ${agentRole}. Personality: ${agentPersonality}. Tone: ${agentTone}. Transcript so far:\n${chatHistoryRef.current.join('\n')}\nAdd your unique response to the discussion. Respond entirely in character utilizing the requested tone and personality. Keep it brief.`;
 
           const res = await fetch('/api/chat', {
             method: 'POST',
@@ -263,7 +287,7 @@ function AgenticCanvas() {
 
           setNodeTalking(agent.id, true);
           hasMoreToSay = true; // Trigger next round
-          transcript.push(`${(agent.data as any).name} says: "${textResponse}"`);
+          chatHistoryRef.current.push(`${(agent.data as any).name} says: "${textResponse}"`);
           
           setCurrentSubtitle({ agentName: (agent.data as any).name, text: textResponse });
           
@@ -420,18 +444,28 @@ function AgenticCanvas() {
                 className="flex-1 bg-transparent border-none outline-none px-4 py-2 text-slate-800 placeholder:text-slate-400"
               />
               {isProcessing && (
-                <button
-                  onClick={stopProcessing}
-                  className="w-12 h-12 bg-rose-600 text-white rounded-2xl flex items-center justify-center hover:bg-rose-700 transition-colors shadow-[0_0_15px_rgba(225,29,72,0.4)]"
-                  title="Stop Generation"
-                >
-                  <div className="w-4 h-4 bg-white rounded-sm" />
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={stopProcessing}
+                    className="w-12 h-12 bg-rose-600 text-white rounded-2xl flex items-center justify-center hover:bg-rose-700 transition-colors shadow-[0_0_15px_rgba(225,29,72,0.4)]"
+                    title="Stop Generation"
+                  >
+                    <div className="w-4 h-4 bg-white rounded-sm" />
+                  </button>
+                  <button
+                    onClick={handleInterject}
+                    disabled={!inputValue.trim()}
+                    className="w-12 px-2 bg-amber-500 text-white rounded-2xl flex items-center justify-center hover:bg-amber-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_15px_rgba(245,158,11,0.4)]"
+                    title="Interject & Overwrite context"
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
               )}
               
               {!isProcessing && (
                 <button
-                  onClick={sendMessage}
+                  onClick={() => sendMessage()}
                   disabled={!inputValue.trim()}
                   className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -443,10 +477,32 @@ function AgenticCanvas() {
         </div>
 
         {/* Floating Action Button */}
-        <div className="fixed bottom-8 right-8 flex flex-col gap-4 z-50">
-          <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={openAddModal} className="w-16 h-16 bg-indigo-600 text-white rounded-[1.5rem] shadow-2xl flex items-center justify-center hover:bg-indigo-700 transition-colors" title="Add Agent">
-            <Plus size={32} />
-          </motion.button>
+        <div className={`fixed flex flex-col gap-4 z-[200] transition-all duration-500 ease-in-out ${nodes.length === 0 ? 'top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2' : 'bottom-8 right-8'}`}>
+          <div className="relative group">
+            <div className={`absolute bg-slate-900 border border-slate-700 text-white text-xs p-4 rounded-xl opacity-0 scale-95 pointer-events-none group-hover:opacity-100 group-hover:scale-100 transition-all shadow-2xl z-50 ${
+                nodes.length === 0 
+                  ? 'top-full mt-6 left-1/2 -translate-x-1/2 w-72 text-center origin-top' 
+                  : 'right-full mr-4 top-1/2 -translate-y-1/2 w-64 origin-right'
+              }`}>
+              <b className="text-amber-400 block mb-2 uppercase tracking-wide">Swarm Platform</b>
+              Create distinct AI agents to collaboratively research, debate, or solve complex requests automatically.
+              {nodes.length === 0 && (
+                <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-slate-900 border-l border-t border-slate-700 rotate-45" />
+              )}
+            </div>
+            <motion.button 
+              layout
+              whileHover={{ scale: 1.1 }} 
+              whileTap={{ scale: 0.9 }} 
+              onClick={openAddModal} 
+              className={`bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-all ring-4 ring-white/20 shadow-[0_0_40px_rgba(79,70,229,0.4)] ${
+                nodes.length === 0 ? 'w-24 h-24 rounded-[2rem]' : 'w-16 h-16 rounded-[1.5rem]'
+              }`}
+              title="Add Agent"
+            >
+              <Plus size={nodes.length === 0 ? 40 : 32} />
+            </motion.button>
+          </div>
         </div>
 
         {/* Add Agent Registration Modal */}
