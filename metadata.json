@@ -1,0 +1,5 @@
+{
+  "name": "Agentic Canvas",
+  "description": "A draggable, zoomable canvas for managing multiple AI agents with squircle designs and pastel aesthetics.",
+  "requestFramePermissions": []
+}
